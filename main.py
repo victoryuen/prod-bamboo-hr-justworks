@@ -1,4 +1,3 @@
-
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -25,7 +24,9 @@ def count_holiday_days(client : BambooHRClient, week1_start, week1_end, week2_st
     item for item in days_off
     if item.get("type") == "holiday"
     ]
-    
+
+
+
     for h in holidays:
         h_start = datetime.strptime(h["start"], "%Y-%m-%d")
         h_end = datetime.strptime(h["end"], "%Y-%m-%d")
@@ -63,19 +64,19 @@ def count_pto_hours(client: BambooHRClient, employee_id, week1_start, week1_end,
                 elif week2_start <= datetime.strptime(date, "%Y-%m-%d") <= week2_end:
                     week2_pto+= float(value)
     return week1_pto,week2_pto
-    
+
 
 def main():
     bamboo_client = BambooHRClient("BEAM",os.environ.get("API_KEY"))
-   
 
-    name_file = input("Enter the Payroll Hours Detail file name WITH .csv: ") 
-    name_file2 =  input("Enter the Approved Hours report file name WITH .csv: ") 
+
+    name_file = input("Enter the Payroll Hours Detail file name WITH .csv: ")
+    name_file2 =  input("Enter the Approved Hours report file name WITH .csv: ")
     while True:
         try:
-            start =  input("Enter a start date (YYYY-MM-DD): ") 
-            end =  input("Enter an end date (YYYY-MM-DD): ") 
-            
+            start =  input("Enter a start date (YYYY-MM-DD): ")
+            end =  input("Enter an end date (YYYY-MM-DD): ")
+
             start_dt = datetime.strptime(start, "%Y-%m-%d")
             end_dt = datetime.strptime(end, "%Y-%m-%d")
             if (end_dt - start_dt == timedelta(days=13)):
@@ -94,28 +95,32 @@ def main():
     df = df[df['Total Hours']!=0]
     if "OT" not in df.columns:
         df["OT"] = 0
+    if "DT" not in df.columns:
+        df["DT"] = 0
     df["Employee Number"] = pd.to_numeric(df["Employee Number"], errors="coerce") + 108
     df["REG"] = pd.to_numeric(df.get("REG", 0), errors="coerce").fillna(0)
     df["OT"] = pd.to_numeric(df.get("OT", 0), errors="coerce").fillna(0)
+    df["DT"] = pd.to_numeric(df.get("DT", 0), errors="coerce").fillna(0)
     df["Time Off"] = pd.to_numeric(df.get("Time Off", 0), errors="coerce").fillna(0)
     rows = []
     if 'Holiday' in df.columns:
+        df["Holiday"] = pd.to_numeric(df.get("Holiday", 0), errors="coerce").fillna(0)
         week1_holiday_count,week2_holiday_count = count_holiday_days(client=bamboo_client,week1_start=week1_start,week1_end=week1_end,week2_start=week2_start,week2_end=week2_end)
 
     for _, row in df.iterrows():
-        emp_id = row["Employee Number"] 
-        
+        emp_id = row["Employee Number"]
+
         # split name safely
         name_parts = str(row["Name"]).split(",", 1)
         first_name = name_parts[1]
         last_name = name_parts[0] if len(name_parts) > 1 else ""
-        print("Processing ",first_name,last_name)
+        week1_pto,week2_pto = 0,0
         if row["Time Off"] != 0:
 
             week1_pto,week2_pto = count_pto_hours(client=bamboo_client,employee_id=emp_id,week1_start=week1_start,week1_end=week1_end,week2_start=week2_start,week2_end=week2_end)
             if(row["Time Off"]!=week1_pto+week2_pto):
                 print("Error Time off incorrect")
-        
+
         # BambooHR enrichment
         emp = bamboo_client.get(
             f"employees/{emp_id}",
@@ -128,43 +133,59 @@ def main():
         week2_reg_hours = 0
         week1_ot_hours = 0
         week2_ot_hours = 0
-        # load second file 
+        week1_dt_hours = 0
+        week2_dt_hours = 0
+        # load second file
         df_two = pd.read_csv(name_file2)
         df_two = df_two[df_two['Date'].notna()]
         df_two['Date'] = pd.to_datetime(df_two['Date'])
         df_two["Reg Hours"] = pd.to_numeric(df_two["Reg Hours"], errors="coerce").fillna(0)
         if "OT Hours" in df_two.columns:
             df_two["OT Hours"] = pd.to_numeric(df_two["OT Hours"], errors="coerce").fillna(0)
-        
+        if "DT Hours" in df_two.columns:
+            df_two["DT Hours"] = pd.to_numeric(df_two["DT Hours"], errors='coerce').fillna(0)
+
         df_employee_timesheets = df_two[df_two['Employee Number']== row["Employee Number"]-108]
 
 
         for _,row2 in df_employee_timesheets.iterrows():
             row_hours = row2["Reg Hours"]
             ot_hours = row2["OT Hours"]
+            dt_hours = row2["DT Hours"]
             if  week1_start<= row2["Date"] <= week1_end:
                 week1_ot_hours+=ot_hours
                 week1_reg_hours+=row_hours
+                week1_dt_hours+=dt_hours
             elif week2_start<= row2["Date"] <= week2_end:
                  week2_reg_hours+=row_hours
                  week2_ot_hours+=ot_hours
-        
+                 week2_dt_hours+=dt_hours
+
         if 'Holiday' in df and row['Holiday']!=0:
             week1_reg_hours-=(7.5 *week1_holiday_count)
             week2_reg_hours-=(7.5 *week2_holiday_count)
             week1_pto+=(7.5 *week1_holiday_count)
             week2_pto+=(7.5 *week2_holiday_count)
-        if 'Holiday' in df.columns and normalize_hours(week1_reg_hours+week2_reg_hours)!=normalize_hours(row["REG"]) and normalize_hours(week1_pto+week2_pto)==normalize_hours(row["Time Off"]+row["Holiday"]):
+        if  'Holiday' in df.columns and (normalize_hours(week1_reg_hours+week2_reg_hours)!=normalize_hours(row["REG"]) or normalize_hours(week1_pto+week2_pto)!=normalize_hours(row["Time Off"]+row["Holiday"]) or normalize_hours(row["OT"])!=normalize_hours(week1_ot_hours+week2_ot_hours)or normalize_hours(row["DT"])!=normalize_hours(week1_dt_hours+week2_dt_hours)):
             print("You did something wrong hours aren't the same for",first_name,last_name)
             print("Week1's Hours:",normalize_hours(week1_reg_hours),"Week2's Hours:",normalize_hours(week2_reg_hours))
-            print("Total Hours: ",normalize_hours(week1_reg_hours+week2_reg_hours),row["REG"],"OT Hours:", row["OT"] )
+            print("Reg Hours: ",row["REG"],"Coded REG Hours:",normalize_hours(week1_reg_hours+week2_reg_hours))
+            print("OT Hours:", row["OT"],"Coded OT Hours",normalize_hours(week1_ot_hours+week2_ot_hours))
+            print("DT Hours:", row["DT"],"Coded DT Hours",normalize_hours(week1_dt_hours+week2_dt_hours))
             print("Holiday Hours:",row["Holiday"],"PTO Hours:",row["Time Off"])
-            print("PTO Column New: ",normalize_hours(week1_pto+week2_pto) )
-        elif 'Holiday' not in  df.columns and normalize_hours(week1_reg_hours+week2_reg_hours)!=normalize_hours(row["REG"]):
+            print("PTO Hours:",row["Time Off"],"Coded PTO Hours: ",normalize_hours(week1_pto+week2_pto))
+        elif 'Holiday' not in df.columns and (normalize_hours(week1_reg_hours+week2_reg_hours)!=normalize_hours(row["REG"]) or normalize_hours(week1_pto+week2_pto)!=normalize_hours(row["Time Off"]) or normalize_hours(row["OT"])!=normalize_hours(week1_ot_hours+week2_ot_hours)or normalize_hours(row["DT"])!=normalize_hours(week1_dt_hours+week2_dt_hours)):
             print("You did something wrong hours aren't the same for",first_name,last_name)
+            print(row)
+
             print("Week1's Hours:",normalize_hours(week2_reg_hours),"Week2's Hours:",normalize_hours(week2_reg_hours))
-            print("Total Hours: ",normalize_hours(week1_reg_hours+week2_reg_hours),row["REG"],"OT Hours:", row["OT"] )
-            
+            print("Reg Hours: ",row["REG"],"Coded REG Hours:",normalize_hours(week1_reg_hours+week2_reg_hours))
+            print("OT Hours:", row["OT"],"Coded OT Hours",normalize_hours(week1_ot_hours+week2_ot_hours))
+            print("DT Hours:", row["DT"],"Coded DT Hours",normalize_hours(week1_dt_hours+week2_dt_hours))
+            print("PTO Hours:",row["Time Off"],"Coded PTO Hours: ",normalize_hours(week1_pto+week2_pto))
+
+        else:
+            print("Processed ",first_name,last_name)
         
         rows.append({
             "First Name": first_name,
@@ -173,8 +194,10 @@ def main():
             "Start Date": week1_start,
             "End Date": week1_end,
             "Regular Hours": normalize_hours(week1_reg_hours),
+            "Paid Time Off Hours": normalize_hours(week1_pto),
             "Overtime Hours": normalize_hours(week1_ot_hours),
-            "Paid Time Off Hours": normalize_hours(week1_pto)
+            "Double Time Hours":normalize_hours(week1_dt_hours)
+
         })
         rows.append({
             "First Name": first_name,
@@ -183,10 +206,12 @@ def main():
             "Start Date": week2_start,
             "End Date": week2_end,
             "Regular Hours": normalize_hours(week2_reg_hours),
+            "Paid Time Off Hours": normalize_hours(week2_pto),
             "Overtime Hours": normalize_hours(week2_ot_hours),
-            "Paid Time Off Hours": normalize_hours(week2_pto)
+            "Double Time Hours":normalize_hours(week2_dt_hours)
+
         })
-    
+
     transformed_df = pd.DataFrame(rows)
     print(transformed_df)
 
